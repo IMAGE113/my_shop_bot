@@ -1,4 +1,5 @@
 import os
+import asyncio
 import threading
 import requests
 import google.generativeai as genai
@@ -18,6 +19,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 # --- [2. CONFIGURATION] ---
+# မင်းရဲ့ Token တွေက Code ထဲမှာ အဆင်သင့်ပါပြီးသားမို့လို့ ဘာမှ ထပ်ပြင်စရာမလိုပါဘူး
 NOTION_TOKEN = "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"
 DATABASE_ID = "32f72c14272f80548ac1c464a10d92a2"
 GEMINI_API_KEY = "AIzaSyDY_Y_C_O_G_1_Q_B_S_H_E_N_G_H_A_I"
@@ -64,18 +66,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     await update.message.reply_text(reply)
 
-# --- [5. MAIN START] ---
-if __name__ == '__main__':
-    # Flask ကို Thread နဲ့ သီးသန့် Run ပါမယ် (Render Port အတွက်)
-    threading.Thread(target=run_flask, daemon=True).start()
-    
-    print("--- 🤖 Telegram Bot Starting... ---")
-    
-    # Version 20.0 အတွက် Application တည်ဆောက်ပုံ
+# --- [5. MAIN ASYNC START] ---
+async def main():
+    # Telegram Application ကို တည်ဆောက်ခြင်း
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
     # Message Handler ထည့်သွင်းခြင်း
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    # Bot ကို Run ခြင်း (Conflict မဖြစ်အောင် အရင် updates တွေကို ဖျက်ခိုင်းထားပါတယ်)
-    application.run_polling(drop_pending_updates=True)
+    print("--- 🤖 Telegram Bot is Starting... ---")
+    
+    # Polling ကို စတင်ခြင်း (Version 20.0 အတွက် မှန်ကန်သော ပုံစံ)
+    async with application:
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling(drop_pending_updates=True)
+        # Bot ကို ပိတ်မသွားအောင် ထိန်းထားခြင်း
+        while True:
+            await asyncio.sleep(1)
+
+if __name__ == '__main__':
+    # Flask ကို သီးသန့် Thread နဲ့ Run ပါမယ်
+    threading.Thread(target=run_flask, daemon=True).start()
+    
+    # Telegram Bot ကို Asyncio နဲ့ Run ပါမယ်
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
