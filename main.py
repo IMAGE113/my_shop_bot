@@ -6,9 +6,9 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-# --- [1. DUMMY WEB SERVER FOR RENDER] ---
-# Render Port Error ကို ကျော်ဖို့အတွက် ဖြစ်ပါတယ်
+# --- [1. FLASK SERVER FOR RENDER] ---
 app = Flask(__name__)
+
 @app.route('/')
 def home():
     return "Bot is running!"
@@ -35,34 +35,47 @@ def get_notion_inventory():
         "Notion-Version": "2022-06-28"
     }
     try:
-        res = requests.post(url, headers=headers)
+        res = requests.post(url, headers=headers, timeout=10)
         data = res.json()
         items = []
-        for row in data["results"]:
-            name = row["properties"]["Product Name"]["title"][0]["plain_text"]
-            price = row["properties"]["Selling Price"]["number"]
-            items.append(f"• {name}: {price} MMK")
-        return "🛍️ **လက်ရှိရနိုင်သော ပစ္စည်းများ**\n\n" + "\n".join(items) if items else "ပစ္စည်းကုန်နေပါတယ်ဗျာ။"
-    except:
+        for row in data.get("results", []):
+            try:
+                name = row["properties"]["Product Name"]["title"][0]["plain_text"]
+                price = row["properties"]["Selling Price"]["number"]
+                items.append(f"• {name}: {price} MMK")
+            except: continue
+        return "🛍️ **လက်ရှိရနိုင်သော ပစ္စည်းများ**\n\n" + "\n".join(items) if items else "ပစ္စည်းစာရင်း မရှိသေးပါဘူးဗျာ။"
+    except Exception as e:
         return "⚠️ Notion စာရင်းဖတ်လို့မရဖြစ်နေပါတယ်။"
 
 # --- [4. TELEGRAM HANDLER] ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: return
     user_text = update.message.text
+
     if any(x in user_text.lower() for x in ["ဘာရလဲ", "menu", "ပစ္စည်း", "ဈေး"]):
         reply = get_notion_inventory()
     else:
-        response = ai_model.generate_content(f"You are a friendly Burmese shop assistant: {user_text}")
-        reply = response.text
+        try:
+            response = ai_model.generate_content(f"You are a friendly Burmese shop assistant: {user_text}")
+            reply = response.text
+        except:
+            reply = "ခဏလေးနော်၊ AI အလုပ်လုပ်ပုံ အနည်းငယ် နှေးနေလို့ပါ။"
+            
     await update.message.reply_text(reply)
 
 # --- [5. MAIN START] ---
 if __name__ == '__main__':
-    # Flask ကို Background မှာ run မည်
-    threading.Thread(target=run_flask).start()
+    # Flask ကို Thread နဲ့ သီးသန့် Run ပါမယ် (Render Port အတွက်)
+    threading.Thread(target=run_flask, daemon=True).start()
     
-    # Telegram Bot စတင်မည်
     print("--- 🤖 Telegram Bot Starting... ---")
-    tg_app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    tg_app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    tg_app.run_polling()
+    
+    # Version 20.0 အတွက် Application တည်ဆောက်ပုံ
+    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Message Handler ထည့်သွင်းခြင်း
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    
+    # Bot ကို Run ခြင်း (Conflict မဖြစ်အောင် အရင် updates တွေကို ဖျက်ခိုင်းထားပါတယ်)
+    application.run_polling(drop_pending_updates=True)
