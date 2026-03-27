@@ -1,6 +1,6 @@
-flask[async]
-python-telegram-bot==20.4
-google-genai
+fastapi
+uvicorn
+python-telegram-bot
 notion-client
-httpx==0.24.1
-httpcore==0.17.3
+google-genai
+httpx
