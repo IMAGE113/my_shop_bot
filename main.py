@@ -1,75 +1,85 @@
-# main.py
 import os
+import logging
 from fastapi import FastAPI, Request
 from telegram import Bot
-from google.generativeai import Client as GeminiClient
-from notion_client import Client as NotionClient
+from telegram.ext import Dispatcher, MessageHandler, filters
+import google.generativeai as genai
+import requests
 
-# ------------------------
-# Environment / Config
-# ------------------------
+# ---------------------
+# Config
+# ---------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-NOTION_API_KEY = os.getenv("NOTION_API_KEY")
+NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DB_ID = os.getenv("NOTION_DB_ID")
 GENAI_API_KEY = os.getenv("GENAI_API_KEY")
 
-# ------------------------
-# Initialize Clients
-# ------------------------
-bot = Bot(token=TELEGRAM_TOKEN)
-notion = NotionClient(auth=NOTION_API_KEY)
-gemini = GeminiClient(api_key=GENAI_API_KEY)
+genai.api_key = GENAI_API_KEY
 
-# ------------------------
-# FastAPI App
-# ------------------------
+bot = Bot(token=TELEGRAM_TOKEN)
 app = FastAPI()
 
-# ------------------------
-# Helper Functions
-# ------------------------
+logging.basicConfig(level=logging.INFO)
+
+# ---------------------
+# Notion Helper
+# ---------------------
 def get_inventory_list():
-    results = notion.databases.query(database_id=NOTION_DB_ID)
-    menu = []
-    for page in results['results']:
-        name = page['properties']['Product Name']['title'][0]['plain_text']
-        price = page['properties']['Selling Price (MMK)']['number']
-        stock = page['properties']['Stock Quantity']['number']
-        category = page['properties']['Category']['select']['name'] if page['properties']['Category']['select'] else "No Category"
-        menu.append(f"{name} ({category}) - {price} MMK ({stock} left)")
-    return "\n".join(menu)
+    url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    response = requests.post(url, headers=headers)
+    data = response.json()
+    items = []
+    for result in data.get("results", []):
+        props = result["properties"]
+        name = props["Product Name"]["title"][0]["text"]["content"] if props["Product Name"]["title"] else "Unknown"
+        price = props["Selling Price"]["number"] if props["Selling Price"]["number"] else 0
+        stock = props["Stock Quantity"]["number"] if props["Stock Quantity"]["number"] else 0
+        category = props["Category"]["select"]["name"] if props.get("Category") and props["Category"]["select"] else "None"
+        items.append(f"{name} - {price} MMK ({stock} left) [{category}]")
+    return "\n".join(items) if items else "No items in stock."
 
-def ai_reply(message_text):
-    with open("prompt.txt", "r") as f:
-        base_prompt = f.read()
-    prompt = base_prompt + f"\nCustomer says: {message_text}"
-    response = gemini.chat(messages=[{"role": "user", "content": prompt}], model="gemini-1.5-turbo")
-    return response['content'][0]['text'] if 'content' in response else "Sorry, cannot answer."
+# ---------------------
+# AI Helper
+# ---------------------
+def ai_response(user_text):
+    inventory = get_inventory_list()
+    prompt = f"""
+You are an AI assistant for Randy's Cafe.
+Here is the current inventory:\n{inventory}\n
+Customer says: {user_text}
+Reply politely and suggest items from the inventory.
+"""
+    response = genai.chat.completions.create(
+        model="gemini-1.5-turbo",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant for a cafe."},
+            {"role": "user", "content": prompt}
+        ],
+    )
+    return response.choices[0].content
 
-# ------------------------
+# ---------------------
 # Telegram Webhook
-# ------------------------
+# ---------------------
 @app.post("/{token}")
-async def telegram_webhook(token: str, req: Request):
+async def telegram_webhook(token: str, request: Request):
     if token != TELEGRAM_TOKEN:
         return {"status": "unauthorized"}
-    
-    data = await req.json()
-    if "message" in data and "text" in data["message"]:
-        text = data["message"]["text"]
-        chat_id = data["message"]["chat"]["id"]
+    update = await request.json()
+    logging.info(f"Received update: {update}")
 
-        if text.lower() in ["menu", "ဘာရှိလဲ"]:
-            reply = get_inventory_list()
-        else:
-            reply = ai_reply(text)
+    chat_id = update["message"]["chat"]["id"]
+    text = update["message"]["text"]
 
-        bot.send_message(chat_id=chat_id, text=reply)
+    if text.lower() in ["ဘာရှိလဲ", "menu", "မူနူး"]:
+        reply = get_inventory_list()
+    else:
+        reply = ai_response(text)
+
+    bot.send_message(chat_id=chat_id, text=reply)
     return {"status": "ok"}
-
-# ------------------------
-# Test Endpoint
-# ------------------------
-@app.get("/")
-async def home():
-    return {"status": "AI POS System is running!"}
