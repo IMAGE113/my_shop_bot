@@ -8,13 +8,13 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-# --- [1. LOGGING & SERVER] ---
+# --- [1. LOGGING & SERVER SETUP] ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bot is Online!"
+def home(): return "Bot is Alive!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -26,13 +26,11 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 DATABASE_ID = os.environ.get("DATABASE_ID")
 
-# Gemini Setup
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    # Model name ကို stable ဖြစ်တဲ့ gemini-pro သို့မဟုတ် flash နဲ့ စမ်းမယ်
-    ai_model = genai.GenerativeModel('gemini-1.5-flash')
+    ai_model = genai.GenerativeModel('gemini-pro')
 
-# --- [3. NOTION FUNCTION] ---
+# --- [3. NOTION DATA FUNCTION] ---
 def get_notion_data():
     url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
     headers = {
@@ -44,9 +42,14 @@ def get_notion_data():
         res = requests.post(url, headers=headers, timeout=15)
         res.raise_for_status()
         data = res.json()
-        items = [f"• {row['properties']['Product Name']['title'][0]['plain_text']}: {row['properties']['Selling Price']['number']} MMK" 
-                 for row in data.get("results", []) if "Product Name" in row["properties"]]
-        return "🛍️ **Menu**\n\n" + "\n".join(items) if items else "စာရင်းမရှိသေးပါ။"
+        items = []
+        for row in data.get("results", []):
+            try:
+                name = row["properties"]["Product Name"]["title"][0]["plain_text"]
+                price = row["properties"]["Selling Price"]["number"]
+                items.append(f"• {name}: {price} MMK")
+            except: continue
+        return "🛍️ **Shop Menu**\n\n" + "\n".join(items) if items else "စာရင်းမရှိသေးပါ။"
     except Exception as e:
         return f"⚠️ Notion Error: {str(e)}"
 
@@ -60,21 +63,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         try:
             response = ai_model.generate_content(user_text)
-            reply = response.text if response.text else "⚠️ AI အဖြေမပေးနိုင်ပါ။"
+            reply = response.text if response.text else "AI က အဖြေမပေးနိုင်ပါဘူး။"
         except Exception as e:
             reply = f"🚨 AI Error: {str(e)}"
     
     await update.message.reply_text(reply)
 
-# --- [5. MAIN START - RENDER FIXED] ---
-if __name__ == '__main__':
-    # Flask ကို Thread နဲ့ အရင်နိုးမယ်
-    threading.Thread(target=run_flask, daemon=True).start()
-    
-    # Telegram Bot ကို ပိုမိုခိုင်မာတဲ့ နည်းလမ်းနဲ့ Run မယ်
+# --- [5. FIX FOR RUNTIME ERROR - EVENT LOOP] ---
+async def start_bot():
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    logger.info("✅ Bot is starting...")
-    # Render အတွက် အသင့်တော်ဆုံး polling method
-    application.run_polling(drop_pending_updates=True)
+    logger.info("✅ Telegram Bot is Starting...")
+    async with application:
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling(drop_pending_updates=True)
+        # Bot ကို အမြဲတမ်း ပွင့်နေအောင် စောင့်ခိုင်းထားမယ်
+        while True:
+            await asyncio.sleep(1)
+
+if __name__ == '__main__':
+    # Flask ကို Thread နဲ့ run မယ်
+    threading.Thread(target=run_flask, daemon=True).start()
+    
+    # Python 3.14 Event Loop ပြဿနာအတွက် asyncio.run ကို သုံးမယ်
+    try:
+        asyncio.run(start_bot())
+    except KeyboardInterrupt:
+        pass
