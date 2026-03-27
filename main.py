@@ -2,13 +2,12 @@ import os
 import asyncio
 import logging
 import threading
-import requests
 import google.generativeai as genai
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-# --- [1. LOGGING & SERVER SETUP] ---
+# --- [1. LOGGING & SERVER] ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -26,8 +25,8 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    # ဒီနေရာမှာ gemini-1.5-flash လို့ အမှန်အတိုင်း ပြင်ထားပါတယ်
-    ai_model = genai.GenerativeModel('gemini-1.5-flash')
+    # Model name ကို အပြည့်အစုံ 'models/gemini-1.5-flash' လို့ ရေးပေးရပါမယ်
+    ai_model = genai.GenerativeModel('models/gemini-1.5-flash')
 
 # --- [3. MESSAGE HANDLER] ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -35,9 +34,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     
     try:
+        # AI ဆီက အဖြေတောင်းမယ်
         response = ai_model.generate_content(user_text)
         reply = response.text if response.text else "AI က အဖြေမပေးနိုင်ပါဘူး။"
     except Exception as e:
+        logger.error(f"Gemini Error: {e}")
         reply = f"🚨 AI Error: {str(e)}"
     
     await update.message.reply_text(reply)
@@ -47,7 +48,7 @@ async def start_bot():
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    logger.info("✅ Bot က စတင်နေပါပြီ...")
+    logger.info("✅ Bot starting with models/gemini-1.5-flash...")
     async with application:
         await application.initialize()
         await application.start()
