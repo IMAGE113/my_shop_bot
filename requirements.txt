@@ -1,5 +1,5 @@
+flask[async]
 python-telegram-bot
 google-generativeai
-flask
 notion-client
 httpx
