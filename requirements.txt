@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-python-telegram-bot
-notion-client
+python-telegram-bot==20.8
+notion-client==2.2.1
 google-genai
 httpx
