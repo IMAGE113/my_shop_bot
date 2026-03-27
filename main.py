@@ -30,7 +30,7 @@ API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if API_KEY:
     genai.configure(api_key=API_KEY)
-    ai_model = genai.GenerativeModel('‘gemini-1.5-flash-latest')
+    ai_model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 # 4. MESSAGE HANDLER
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
