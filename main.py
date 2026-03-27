@@ -9,17 +9,17 @@ import google.generativeai as genai
 # --- CONFIG ---
 TOKEN = os.environ.get("BOT_TOKEN")
 NOTION_TOKEN = os.environ.get("NOTION_API_KEY")
-GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
 DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
+GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
+MODEL_NAME = os.environ.get("GENAI_MODEL_NAME", "gemini-1.5-turbo")
 
 # --- SETUP ---
 logging.basicConfig(level=logging.INFO)
 
-# Gemini (Stable SDK)
-genai.configure(api_key=GENAI_API_KEY)
-MODEL_NAME = "gemini-1.5-flash"  # Stable SDK မှာသုံးနိုင်ပါတယ်
+# Gemini Stable Client
+client = genai.Client(api_key=GENAI_API_KEY)
 
-# Notion
+# Notion Client
 notion = Client(auth=NOTION_TOKEN)
 
 # FastAPI + Telegram
@@ -33,8 +33,8 @@ def get_inventory_list():
             return "❌ Database ID missing"
 
         response = notion.databases.query(database_id=DATABASE_ID)
-
         items = []
+
         for row in response.get("results", []):
             props = row.get("properties", {})
 
@@ -51,7 +51,6 @@ def get_inventory_list():
             items.append(f"• {name} - {price} MMK (Stock: {stock})")
 
         return "\n".join(items) if items else "No items found."
-
     except Exception as e:
         logging.error(f"Notion Error: {e}")
         return "⚠️ Database error"
@@ -65,25 +64,18 @@ async def process_message(user_text):
 
     try:
         inventory = get_inventory_list()
+        with open("prompt.txt", "r", encoding="utf-8") as f:
+            base_prompt = f.read()
 
-        prompt = f"""
-You are a helpful shop assistant.
+        prompt = base_prompt.format(user_text=user_text, inventory=inventory)
 
-Available products:
-{inventory}
-
-Customer: {user_text}
-
-Reply naturally and recommend products if needed.
-"""
-
-        response = genai.models.generate(
+        response = client.generate_text(
             model=MODEL_NAME,
             prompt=prompt,
-            max_output_tokens=500
+            temperature=0.7
         )
 
-        return response.output_text if response.output_text else "🤖 No response"
+        return response.text if response.text else "🤖 No response"
 
     except Exception as e:
         logging.error(f"Gemini Error: {e}")
@@ -97,12 +89,10 @@ async def telegram_webhook(request: Request):
 
     if update.message and update.message.text:
         reply = await process_message(update.message.text)
-
         await tg_app.bot.send_message(
             chat_id=update.effective_chat.id,
             text=reply
         )
-
     return {"status": "ok"}
 
 # --- HEALTH CHECK ---
@@ -114,7 +104,6 @@ async def home():
 @app.on_event("startup")
 async def startup():
     await tg_app.initialize()
-
     render_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
     if render_url:
         webhook_url = f"https://{render_url}/{TOKEN}"
