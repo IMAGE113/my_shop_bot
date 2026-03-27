@@ -1,5 +1,6 @@
-fastapi
-uvicorn
+fastapi==0.107.0
+uvicorn==0.23.2
 python-telegram-bot==20.4
-httpx
-google-generativeai==0.5.4
+notion-client==0.8.0
+google-generativeai==0.2.2
+python-dotenv==1.0.0
