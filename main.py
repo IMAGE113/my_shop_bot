@@ -3,7 +3,7 @@ import logging
 from fastapi import FastAPI, Request
 from telegram import Update
 from telegram.ext import Application
-from notion_client import Client as NotionClient
+from notion_client import Client
 from google import genai
 
 # --- CONFIGURATION ---
@@ -12,12 +12,12 @@ NOTION_TOKEN = os.environ.get("NOTION_API_KEY")
 GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
 DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 
-# AI Setup (New Google GenAI SDK)
+# AI Setup
 client = genai.Client(api_key=GENAI_API_KEY)
 MODEL_NAME = "gemini-1.5-flash"
 
-# Notion Setup
-notion = NotionClient(auth=NOTION_TOKEN)
+# Notion Setup (Corrected syntax)
+notion = Client(auth=NOTION_TOKEN)
 
 app = FastAPI()
 tg_app = Application.builder().token(TOKEN).build()
@@ -26,22 +26,28 @@ tg_app = Application.builder().token(TOKEN).build()
 def get_inventory_list():
     try:
         if not DATABASE_ID:
-            return "Error: NOTION_DATABASE_ID is missing in ENV!"
+            return "Error: NOTION_DATABASE_ID is missing!"
+        
+        # Corrected: notion.databases.query is standard for notion-client
         response = notion.databases.query(database_id=DATABASE_ID)
         items = []
-        for row in response["results"]:
-            p = row["properties"]
+        for row in response.get("results", []):
+            p = row.get("properties", {})
             try:
-                name = p["Product Name"]["title"][0]["plain_text"]
-                price = p["Selling Price (MMK)"]["number"] or 0
-                stock = p["Stock Quantity"]["number"] or 0
+                # မင်းရဲ့ Column နာမည်တွေဖြစ်တဲ့ Product Name, Selling Price (MMK), Stock Quantity နဲ့ ညှိထားတယ်
+                name_list = p.get("Product Name", {}).get("title", [])
+                name = name_list[0].get("plain_text") if name_list else "Unknown"
+                
+                price = p.get("Selling Price (MMK)", {}).get("number") or 0
+                stock = p.get("Stock Quantity", {}).get("number") or 0
+                
                 items.append(f"• {name}: {price} MMK (လက်ကျန်: {stock})")
             except (KeyError, IndexError):
                 continue
         return "\n".join(items) if items else "ပစ္စည်းစာရင်း မရှိသေးပါခင်ဗျာ။"
     except Exception as e:
         logging.error(f"Notion Error: {e}")
-        return f"Notion Error: {str(e)}"
+        return f"Database error ဖြစ်နေပါတယ်။"
 
 # --- MAIN LOGIC ---
 async def process_message(user_text):
@@ -51,8 +57,8 @@ async def process_message(user_text):
     
     try:
         inventory_context = get_inventory_list()
-        prompt = f"You are a shop assistant. Inventory:\n{inventory_context}\nCustomer: {user_text}"
-        # google-genai SDK အသစ်ရဲ့ syntax
+        prompt = f"You are a helpful shop assistant. Current Inventory:\n{inventory_context}\nCustomer: {user_text}\nPlease reply in Myanmar language."
+        # Correct syntax for google-genai SDK
         response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
         return response.text
     except Exception as e:
@@ -71,7 +77,7 @@ async def telegram_webhook(request: Request):
 
 @app.get("/")
 async def health_check():
-    return {"status": "running", "using_db": DATABASE_ID[:5] + "..." if DATABASE_ID else "None"}
+    return {"status": "running"}
 
 @app.on_event("startup")
 async def on_startup():
