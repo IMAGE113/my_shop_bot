@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import threading
+import requests
 import google.generativeai as genai
 from flask import Flask
 from telegram import Update
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bot is Online!"
+def home(): return "Bot is Fully Stable!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -23,32 +24,38 @@ def run_flask():
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+# Model နာမည်တွေကို အဆင့်ဆင့် ကြိုစဉ်းစားထားမယ်
+MODELS_TO_TRY = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    # Model name ကို အပြည့်အစုံ 'models/gemini-1.5-flash' လို့ ရေးပေးရပါမယ်
-    ai_model = genai.GenerativeModel('models/gemini-1.5-flash')
 
-# --- [3. MESSAGE HANDLER] ---
+# --- [3. AI RESPONSE LOGIC] ---
+def get_ai_response(text):
+    for model_name in MODELS_TO_TRY:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(text)
+            return response.text
+        except Exception as e:
+            logger.warning(f"Model {model_name} failed: {e}")
+            continue # နောက် model တစ်ခုနဲ့ ထပ်စမ်းမယ်
+    return "🚨 လက်ရှိမှာ AI Model အားလုံး Error တက်နေပါတယ်။ ခဏနေမှ ပြန်စမ်းပေးပါ။"
+
+# --- [4. MESSAGE HANDLER] ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update or not update.message or not update.message.text: return
-    user_text = update.message.text
+    if not update.message or not update.message.text: return
     
-    try:
-        # AI ဆီက အဖြေတောင်းမယ်
-        response = ai_model.generate_content(user_text)
-        reply = response.text if response.text else "AI က အဖြေမပေးနိုင်ပါဘူး။"
-    except Exception as e:
-        logger.error(f"Gemini Error: {e}")
-        reply = f"🚨 AI Error: {str(e)}"
-    
+    # AI ဆီက အဖြေတောင်းမယ်
+    reply = get_ai_response(update.message.text)
     await update.message.reply_text(reply)
 
-# --- [4. MAIN FUNCTION] ---
+# --- [5. MAIN START] ---
 async def start_bot():
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    logger.info("✅ Bot starting with models/gemini-1.5-flash...")
+    logger.info("✅ Bot is Online and Ready!")
     async with application:
         await application.initialize()
         await application.start()
@@ -60,5 +67,5 @@ if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
     try:
         asyncio.run(start_bot())
-    except KeyboardInterrupt:
-        pass
+    except Exception as e:
+        logger.error(f"Fatal Error: {e}")
