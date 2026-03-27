@@ -67,7 +67,7 @@ async def process_order(user_text):
     prompt = f"User: '{user_text}'. Inventory: {json.dumps(inv_summary)}. Return JSON {{'match': true/false, 'item': 'name', 'qty': 1}}."
     
     try:
-        response = ai_client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
+        response = ai_client.models.generate_content(model='gemini-1.5-flash-latest', contents=prompt)
         order = json.loads(response.text.replace("```json", "").replace("```", "").strip())
         
         if order.get("match") and order["item"] in inventory:
