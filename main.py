@@ -12,17 +12,17 @@ NOTION_TOKEN = os.environ.get("NOTION_API_KEY")
 GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
 DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 
-# --- LOGGING ---
+# --- SETUP ---
 logging.basicConfig(level=logging.INFO)
 
-# --- GEMINI (STABLE OLD SDK) ---
+# Gemini (Stable SDK)
 genai.configure(api_key=GENAI_API_KEY)
-MODEL_NAME = "gemini-1.5-flash"
+MODEL_NAME = "gemini-1.5-flash"  # Stable SDK မှာသုံးနိုင်ပါတယ်
 
-# --- NOTION SETUP ---
+# Notion
 notion = Client(auth=NOTION_TOKEN)
 
-# --- FASTAPI + TELEGRAM SETUP ---
+# FastAPI + Telegram
 app = FastAPI()
 tg_app = Application.builder().token(TOKEN).build()
 
@@ -33,8 +33,8 @@ def get_inventory_list():
             return "❌ Database ID missing"
 
         response = notion.databases.query(database_id=DATABASE_ID)
-        items = []
 
+        items = []
         for row in response.get("results", []):
             props = row.get("properties", {})
 
@@ -77,14 +77,13 @@ Customer: {user_text}
 Reply naturally and recommend products if needed.
 """
 
-        # OLD STABLE Gemini syntax
         response = genai.models.generate(
             model=MODEL_NAME,
             prompt=prompt,
             max_output_tokens=500
         )
 
-        return response.output_text if hasattr(response, "output_text") else "🤖 No response"
+        return response.output_text if response.output_text else "🤖 No response"
 
     except Exception as e:
         logging.error(f"Gemini Error: {e}")
@@ -98,6 +97,7 @@ async def telegram_webhook(request: Request):
 
     if update.message and update.message.text:
         reply = await process_message(update.message.text)
+
         await tg_app.bot.send_message(
             chat_id=update.effective_chat.id,
             text=reply
@@ -114,6 +114,7 @@ async def home():
 @app.on_event("startup")
 async def startup():
     await tg_app.initialize()
+
     render_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
     if render_url:
         webhook_url = f"https://{render_url}/{TOKEN}"
