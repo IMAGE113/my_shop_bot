@@ -1,111 +1,82 @@
 import os
 import logging
 from fastapi import FastAPI, Request
-from telegram import Update
-from telegram.ext import Application
-from notion_client import Client
+from telegram import Bot, Update
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+import httpx
 import google.generativeai as genai
+from notion_client import Client as NotionClient
 
-# --- CONFIG ---
-TOKEN = os.environ.get("BOT_TOKEN")
-NOTION_TOKEN = os.environ.get("NOTION_API_KEY")
-DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
-GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
-MODEL_NAME = os.environ.get("GENAI_MODEL_NAME", "gemini-1.5-turbo")
+# =========================
+# Config / Environment
+# =========================
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+GENAI_API_KEY = os.getenv("GENAI_API_KEY")
+NOTION_KEY = os.getenv("NOTION_KEY")
+NOTION_DB_ID = os.getenv("NOTION_DB_ID")
 
-# --- SETUP ---
-logging.basicConfig(level=logging.INFO)
-
-# Gemini Stable Client
+# Gemini client init (stable 0.4.1)
 client = genai.Client(api_key=GENAI_API_KEY)
 
-# Notion Client
-notion = Client(auth=NOTION_TOKEN)
+# Notion client
+notion = NotionClient(auth=NOTION_KEY)
 
-# FastAPI + Telegram
+# Telegram bot
+bot = Bot(token=TELEGRAM_TOKEN)
 app = FastAPI()
-tg_app = Application.builder().token(TOKEN).build()
 
-# --- NOTION INVENTORY ---
-def get_inventory_list():
+# =========================
+# Telegram Handlers
+# =========================
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
+
+    # Call Gemini
     try:
-        if not DATABASE_ID:
-            return "❌ Database ID missing"
-
-        response = notion.databases.query(database_id=DATABASE_ID)
-        items = []
-
-        for row in response.get("results", []):
-            props = row.get("properties", {})
-
-            # Product Name
-            title_data = props.get("Product Name", {}).get("title", [])
-            name = title_data[0]["plain_text"] if title_data else "Unknown"
-
-            # Price
-            price = props.get("Selling Price (MMK)", {}).get("number") or 0
-
-            # Stock
-            stock = props.get("Stock Quantity", {}).get("number") or 0
-
-            items.append(f"• {name} - {price} MMK (Stock: {stock})")
-
-        return "\n".join(items) if items else "No items found."
-    except Exception as e:
-        logging.error(f"Notion Error: {e}")
-        return "⚠️ Database error"
-
-# --- AI RESPONSE ---
-async def process_message(user_text):
-    # Menu trigger
-    if any(word in user_text.lower() for word in ["menu", "list", "ဘာရှိလဲ"]):
-        inventory = get_inventory_list()
-        return f"📋 Randy's Shop Menu:\n\n{inventory}"
-
-    try:
-        inventory = get_inventory_list()
-        with open("prompt.txt", "r", encoding="utf-8") as f:
-            base_prompt = f.read()
-
-        prompt = base_prompt.format(user_text=user_text, inventory=inventory)
-
         response = client.generate_text(
-            model=MODEL_NAME,
-            prompt=prompt,
-            temperature=0.7
+            model="text-bison-001",
+            prompt=user_text,
+            temperature=0.7,
+            max_output_tokens=500
         )
-
-        return response.text if response.text else "🤖 No response"
-
+        reply_text = response.result
     except Exception as e:
         logging.error(f"Gemini Error: {e}")
-        return "⚠️ AI error, try again later"
+        reply_text = "Sorry, something went wrong with AI."
 
-# --- TELEGRAM WEBHOOK ---
-@app.post(f"/{TOKEN}")
-async def telegram_webhook(request: Request):
-    data = await request.json()
-    update = Update.de_json(data, tg_app.bot)
+    # Send reply
+    await update.message.reply_text(reply_text)
 
-    if update.message and update.message.text:
-        reply = await process_message(update.message.text)
-        await tg_app.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=reply
+    # Log to Notion (optional)
+    try:
+        notion.pages.create(
+            parent={"database_id": NOTION_DB_ID},
+            properties={
+                "Question": {"title": [{"text": {"content": user_text}}]},
+                "Answer": {"rich_text": [{"text": {"content": reply_text}}]},
+            },
         )
-    return {"status": "ok"}
+    except Exception as e:
+        logging.error(f"Notion Error: {e}")
 
-# --- HEALTH CHECK ---
-@app.get("/")
-async def home():
-    return {"status": "running"}
+# Telegram app
+telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# --- STARTUP ---
-@app.on_event("startup")
-async def startup():
-    await tg_app.initialize()
-    render_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
-    if render_url:
-        webhook_url = f"https://{render_url}/{TOKEN}"
-        await tg_app.bot.set_webhook(webhook_url)
-        logging.info(f"Webhook set: {webhook_url}")
+# =========================
+# FastAPI webhook
+# =========================
+@app.post(f"/{TELEGRAM_TOKEN}")
+async def telegram_webhook(req: Request):
+    data = await req.json()
+    update = Update.de_json(data, bot)
+    await telegram_app.update_queue.put(update)
+    return {"ok": True}
+
+# =========================
+# Run
+# =========================
+if __name__ == "__main__":
+    import uvicorn
+    logging.basicConfig(level=logging.INFO)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
