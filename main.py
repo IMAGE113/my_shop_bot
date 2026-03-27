@@ -1,70 +1,75 @@
+# main.py
 import os
-import logging
 from fastapi import FastAPI, Request
-from telegram import Bot, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import google.generativeai as genai
+from telegram import Bot
+from google.generativeai import Client as GeminiClient
+from notion_client import Client as NotionClient
 
-# ---------- Environment Variables ----------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# ------------------------
+# Environment / Config
+# ------------------------
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+NOTION_API_KEY = os.getenv("NOTION_API_KEY")
+NOTION_DB_ID = os.getenv("NOTION_DB_ID")
 GENAI_API_KEY = os.getenv("GENAI_API_KEY")
-GENAI_MODEL_NAME = os.getenv("GENAI_MODEL_NAME", "gemini-1.5-turbo")
-PORT = int(os.getenv("PORT", 10000))
-WEB_HOOK_URL = os.getenv("WEB_HOOK_URL")
 
-# ---------- Logging ----------
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ------------------------
+# Initialize Clients
+# ------------------------
+bot = Bot(token=TELEGRAM_TOKEN)
+notion = NotionClient(auth=NOTION_API_KEY)
+gemini = GeminiClient(api_key=GENAI_API_KEY)
 
-# ---------- Set API Key ----------
-genai.configure(api_key=GENAI_API_KEY)
-logger.info(f"Gemini API configured with model {GENAI_MODEL_NAME}")
-
-# ---------- Telegram Bot ----------
-bot = Bot(token=BOT_TOKEN)
+# ------------------------
+# FastAPI App
+# ------------------------
 app = FastAPI()
 
-# ---------- Telegram Command Handlers ----------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="Hello! Bot is live.")
+# ------------------------
+# Helper Functions
+# ------------------------
+def get_inventory_list():
+    results = notion.databases.query(database_id=NOTION_DB_ID)
+    menu = []
+    for page in results['results']:
+        name = page['properties']['Product Name']['title'][0]['plain_text']
+        price = page['properties']['Selling Price (MMK)']['number']
+        stock = page['properties']['Stock Quantity']['number']
+        category = page['properties']['Category']['select']['name'] if page['properties']['Category']['select'] else "No Category"
+        menu.append(f"{name} ({category}) - {price} MMK ({stock} left)")
+    return "\n".join(menu)
 
-async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompt_text = " ".join(context.args)
-    if not prompt_text:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Please provide a question.")
-        return
-    # Gemini generate
-    response = genai.models.generate(
-        model=GENAI_MODEL_NAME,
-        prompt=prompt_text,
-        max_output_tokens=300
-    )
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=response.output_text)
+def ai_reply(message_text):
+    with open("prompt.txt", "r") as f:
+        base_prompt = f.read()
+    prompt = base_prompt + f"\nCustomer says: {message_text}"
+    response = gemini.chat(messages=[{"role": "user", "content": prompt}], model="gemini-1.5-turbo")
+    return response['content'][0]['text'] if 'content' in response else "Sorry, cannot answer."
 
-# ---------- FastAPI Routes ----------
-@app.post(f"/{BOT_TOKEN}")
-async def telegram_webhook(request: Request):
-    data = await request.json()
-    logger.info(f"Received update: {data}")
+# ------------------------
+# Telegram Webhook
+# ------------------------
+@app.post("/{token}")
+async def telegram_webhook(token: str, req: Request):
+    if token != TELEGRAM_TOKEN:
+        return {"status": "unauthorized"}
+    
+    data = await req.json()
+    if "message" in data and "text" in data["message"]:
+        text = data["message"]["text"]
+        chat_id = data["message"]["chat"]["id"]
+
+        if text.lower() in ["menu", "ဘာရှိလဲ"]:
+            reply = get_inventory_list()
+        else:
+            reply = ai_reply(text)
+
+        bot.send_message(chat_id=chat_id, text=reply)
     return {"status": "ok"}
 
+# ------------------------
+# Test Endpoint
+# ------------------------
 @app.get("/")
-async def root():
-    return {"message": "Bot server is running."}
-
-# ---------- Telegram Application ----------
-def run_telegram_bot():
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("ask", ask))
-    # Set webhook
-    bot.set_webhook(url=WEB_HOOK_URL)
-    application.run_polling()
-
-# ---------- Run FastAPI ----------
-if __name__ == "__main__":
-    import uvicorn
-    import threading
-
-    threading.Thread(target=run_telegram_bot, daemon=True).start()
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+async def home():
+    return {"status": "AI POS System is running!"}
