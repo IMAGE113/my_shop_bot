@@ -1,78 +1,85 @@
 import os
-import asyncio
 import logging
-import threading
-import google.generativeai as genai
-from flask import Flask
+import asyncio
+from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+import google.generativeai as genai
+from notion_client import Client # Notion Library ပြန်ထည့်မယ်
 
-# 1. LOGGING
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# --- Config ---
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+GENAI_API_KEY = os.environ.get("GEMINI_API_KEY")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
+DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
+
+# --- Clients Setup ---
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 2. FLASK SERVER (Render Port Error အတွက် အရေးကြီးဆုံးအပိုင်း)
+genai.configure(api_key=GENAI_API_KEY)
+ai_model = genai.GenerativeModel("gemini-1.5-flash")
+notion = Client(auth=NOTION_TOKEN)
+
 app = Flask(__name__)
+application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-@app.route('/')
-def health_check():
-    return "OK", 200
-
-def run_flask():
-    # Render ကပေးတဲ့ Port ကို သေချာသုံးရပါမယ်
-    port = int(os.environ.get("PORT", 10000))
-    logger.info(f"Starting Flask on port {port}")
-    app.run(host='0.0.0.0', port=port)
-
-# 3. CONFIGURATION
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-API_KEY = os.environ.get("GEMINI_API_KEY")
-
-if API_KEY:
-    genai.configure(api_key=API_KEY)
-    ai_model = genai.GenerativeModel("gemini-1.5-flash")
-
-# 4. MESSAGE HANDLER
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    
-    user_text = update.message.text
-    logger.info(f"Received message: {user_text}")
-
+# --- Notion Helper ---
+def save_to_notion(user_name, message):
     try:
-        response = ai_model.generate_content(user_text)
-        await update.message.reply_text(response.text)
+        notion.pages.create(
+            parent={"database_id": DATABASE_ID},
+            properties={
+                "Name": {"title": [{"text": {"content": user_name}}]},
+                "Order/Message": {"rich_text": [{"text": {"content": message}}]},
+            },
+        )
+        logger.info("✅ Saved to Notion successfully!")
+    except Exception as e:
+        logger.error(f"❌ Notion Error: {e}")
+
+# --- Handlers ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: return
+    
+    user_msg = update.message.text
+    user_name = update.message.from_user.first_name
+    logger.info(f"Received from {user_name}: {user_msg}")
+
+    # 1. Save to Notion (Order တွေကို မှတ်မယ်)
+    save_to_notion(user_name, user_msg)
+
+    # 2. Get AI Response
+    try:
+        response = ai_model.generate_content(user_msg)
+        reply_text = response.text
     except Exception as e:
         logger.error(f"Gemini Error: {e}")
-        await update.message.reply_text("ခေတ္တစောင့်ဆိုင်းပေးပါ။ AI ဘက်မှာ အလုပ်များနေလို့ပါ။")
+        reply_text = "AI ခေတ္တ အနားယူနေပါတယ်။"
 
-# 5. MAIN START
-async def start_bot():
-    if not TOKEN:
-        logger.error("No Bot Token found!")
-        return
+    await update.message.reply_text(reply_text)
 
-    application = ApplicationBuilder().token(TOKEN).build()
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
-    async with application:
-        await application.initialize()
-        await application.start()
-        logger.info("✅ Bot logic is running...")
-        await application.updater.start_polling(drop_pending_updates=True)
-        # အဆုံးမရှိ စောင့်နေအောင် လုပ်ထားမယ်
-        while True:
-            await asyncio.sleep(1)
+application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-if __name__ == '__main__':
-    # Flask ကို အရင်ဆုံး Background မှာ Run မယ် (Port Scan အောင်ဖို့)
-    t = threading.Thread(target=run_flask)
-    t.daemon = True
-    t.start()
-    
-    # Bot ကို Run မယ်
-    try:
-        asyncio.run(start_bot())
-    except KeyboardInterrupt:
-        pass
+# --- Webhook & Startup (Same as before) ---
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+async def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    await application.process_update(update)
+    return "OK", 200
+
+@app.route("/")
+def index(): return "Bot is running with Notion & Webhook!", 200
+
+async def set_webhook():
+    if WEBHOOK_URL and BOT_TOKEN:
+        webhook_path = f"{WEBHOOK_URL}/{BOT_TOKEN}"
+        await application.bot.set_webhook(url=webhook_path, drop_pending_updates=True)
+
+if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(set_webhook())
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
